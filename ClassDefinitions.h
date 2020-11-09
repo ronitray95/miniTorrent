@@ -1,8 +1,16 @@
 #include <string>
 #include <iostream>
 #include <set>
+#include <fstream>
+#include <thread>
+
+#include <string.h>
+#include <netinet/in.h>
+#include <openssl/sha.h>
+
 using namespace std;
 
+size_t PIECE_SIZE = 512 * 1024;
 class user
 {
 public:
@@ -31,6 +39,17 @@ public:
 		this->port = port;
 		this->userID = userID;
 	}
+	/*peer &operator=(const peer &t)
+	{
+		this->ip = ip;
+		this->port = port;
+		this->userID = userID;
+	}*/
+	bool operator<(const peer &rhs) const
+	{
+		return port < rhs.port;
+	}
+
 	peer(const peer &p)
 	{
 		ip = p.ip;
@@ -82,35 +101,43 @@ public:
 class file_properties
 {
 public:
+	int id;
+	string name;
+	string path;
+	string groupName;
+	int pieces;
+	set<peer> seederList;
+	string hash;
+
 	file_properties()
 	{
+		id = -1;
 		name = "";
 		path = "";
 		groupName = "";
 		pieces = 0;
 		hash = "";
 	}
-	file_properties(string n, string p, string grp, int pi, string hh)
+	file_properties(int i, string n, string p, string grp, int pi, string hh, set<peer> seedList)
 	{
+		id = i;
 		name = n;
 		path = p;
 		groupName = grp;
 		pieces = pi;
 		hash = hh;
+		seederList = seedList;
 	}
 	file_properties(const file_properties &f)
 	{
+		id = f.id;
 		name = f.name;
 		path = f.path;
 		groupName = f.groupName;
 		pieces = f.pieces;
 		hash = f.hash;
+		seederList = f.seederList;
 	}
-	string name;
-	string path;
-	string groupName;
-	int pieces;
-	string hash;
 };
 
 /*class connectedClient

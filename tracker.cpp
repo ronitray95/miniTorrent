@@ -28,26 +28,34 @@ map<string, peer> peerList;
 map<string, group_pending_request> groupPendingRequests;
 map<string, vector<file_properties>> filesInGroup;
 vector<string> connectedClients;
-map<string, user> peerDetailsList;
+//map<string, user> peerDetailsList;
+int FILE_ID = 1;
 
 void handlePeerCommunication(string ip, int p, int acc)
 {
 	cout << "Thread launch\n";
-	char buffer[4096] = {0};
+	char *buffer; //[4096] = {0};
 	bool IS_LOGGED_IN = false;
 	string LOGIN_ID = "";
 	while (true)
 	{
+		buffer = new char[4096];
 		memset(buffer, 0, 4096);
-		recv(acc, buffer, 4096, 0);
-		printf("Client %s:%d said %s\n", ip.c_str(), p, buffer);
-		string cmdRecvd = string(buffer), t, msg = "";
+		int l = read(acc, buffer, 4096);
+		printf("Client %s:%d said %s (Msg length %d)\n", ip.c_str(), p, buffer, l);
+		string cmdRecvd = string(buffer);
+		for (int i = 0; i < l; i++)
+			cmdRecvd += buffer[i];
+		string t, msg = "";
+		//delete[] buffer;cout<<"W1";
 		stringstream x(cmdRecvd);
+		//cout << "W1\n";
 		vector<string> cmds;
 		while (getline(x, t, ' '))
 		{
 			cmds.push_back(t);
 		}
+		//cout << "W1\n";
 		if (cmds[0] == "a")
 		{
 			user u(cmds[1], cmds[2]);
@@ -100,7 +108,7 @@ void handlePeerCommunication(string ip, int p, int acc)
 		else if (cmds[0] == "c")
 		{
 			group grp(cmds[1], LOGIN_ID);
-			set<string> mems;//add admin to group
+			set<string> mems; //add admin to group
 			mems.insert(LOGIN_ID);
 			grp.members = mems;
 			int i;
@@ -109,8 +117,8 @@ void handlePeerCommunication(string ip, int p, int acc)
 			{
 				if (GROUPS[i].name == cmds[1])
 				{
-					break;
 					flag = true;
+					break;
 				}
 			}
 			if (flag)
@@ -120,6 +128,7 @@ void handlePeerCommunication(string ip, int p, int acc)
 			else
 			{
 				GROUPS.push_back(grp);
+
 				msg = "Group " + grp.name + " created with admin " + grp.adminUserID;
 			}
 			send(acc, msg.c_str(), msg.length(), 0);
@@ -132,8 +141,9 @@ void handlePeerCommunication(string ip, int p, int acc)
 			{
 				if (GROUPS[i].name == cmds[1])
 				{
-					break;
+
 					flag = true;
+					break;
 				}
 			}
 			if (!flag)
@@ -193,7 +203,10 @@ void handlePeerCommunication(string ip, int p, int acc)
 				string pp = "";
 				for (auto i = grpp.pendingID.begin(); i != grpp.pendingID.end(); ++i)
 					pp += (*i + " ");
-				msg = "For group " + grpp.grpname + " pending requests are: " + pp;
+				if (pp == "")
+					msg = "Group not found/No pending requests";
+				else
+					msg = "For group " + grpp.grpname + " pending requests are: " + pp;
 			}
 			send(acc, msg.c_str(), msg.length(), 0);
 		}
@@ -243,10 +256,84 @@ void handlePeerCommunication(string ip, int p, int acc)
 		}
 		else if (cmds[0] == "j")
 		{
+			int i, totPiece = 0;
+			cout << "c1";
+			ifstream ifs(cmds[1], ios::binary);
+			string totalHash = "";
+			cout << "c1";
+			unsigned char piece[PIECE_SIZE], hash[SHA_DIGEST_LENGTH];
+			cout << "c1";
+
+			while (ifs.read((char *)piece, sizeof(piece)) || ifs.gcount())
+			{
+				SHA1(piece, strlen((char *)piece), hash);
+				totalHash += string((char *)hash);
+				totPiece++;
+				memset(piece, 0, PIECE_SIZE);
+			}
+			for (i = 0; i < GROUPS.size(); i++)
+			{
+				if (GROUPS[i].name == cmds[2])
+					break;
+			}
+			if (i == GROUPS.size())
+				msg = "Group " + cmds[2] + " not found";
+			else
+			{
+				vector<file_properties> vv = filesInGroup[cmds[2]];
+				peer currentPeer = peerList[LOGIN_ID];
+				set<peer> peerSet;
+				peerSet.insert(currentPeer);
+				file_properties fp(FILE_ID++, cmds[1], cmds[1], cmds[2], totPiece, totalHash, peerSet);
+				for (i = 0; i < vv.size(); i++)
+				{
+					if (vv[i].path == cmds[1])
+						break;
+				}
+				if (i < vv.size())
+					msg = "File " + cmds[1] + " already exists in group " + cmds[2];
+				else
+				{
+					vv.push_back(fp);
+					filesInGroup[cmds[2]] = vv;
+					msg = to_string(FILE_ID - 1) + " ID File " + cmds[1] + " added to group " + cmds[2];
+				}
+			}
 			send(acc, msg.c_str(), msg.length(), 0);
 		}
-		else if (cmds[0] == "k")
+		else if (cmds[0] == "k") // DL FILE
 		{
+			int i;
+			for (i = 0; i < GROUPS.size(); i++)
+			{
+				if (GROUPS[i].name == cmds[1])
+					break;
+			}
+			if (i == GROUPS.size())
+				msg = "Group " + cmds[1] + " not found";
+			else
+			{
+				vector<file_properties> files = filesInGroup[cmds[1]];
+				for (i = 0; i < files.size(); i++)
+				{
+					if (files[i].path.compare(files[i].path.length() - cmds[2].length(), cmds[2].length(), cmds[2]) == 0)
+						break;
+				}
+				if (i == files.size())
+					msg = "File " + cmds[2] + " not found in group " + cmds[1];
+				else
+				{
+					set<peer> seeds = files[i].seederList;
+					if (seeds.empty())
+						msg = "No seeds are currently present";
+					else
+					{
+						msg = to_string(files[i].id) + " "; //add file id to beginning
+						for (auto i = seeds.begin(); i != seeds.end(); ++i)
+							msg += ((*i).ip + ":" + to_string((*i).port) + " ");
+					}
+				}
+			}
 			send(acc, msg.c_str(), msg.length(), 0);
 		}
 		else if (cmds[0] == "l")
@@ -260,10 +347,12 @@ void handlePeerCommunication(string ip, int p, int acc)
 		}
 		else if (cmds[0] == "m")
 		{
-			send(acc, msg.c_str(), msg.length(), 0);
+			//Show downloads in peer side, nothing to do here
+			//send(acc, msg.c_str(), msg.length(), 0);
 		}
 		else if (cmds[0] == "n")
 		{
+			//stop share - remove from seeder list
 			send(acc, msg.c_str(), msg.length(), 0);
 		}
 		else
@@ -273,160 +362,7 @@ void handlePeerCommunication(string ip, int p, int acc)
 		}
 	}
 }
-/*void getCommand()
-{
-	
-	else if (cmds[0] == "login")
-	{
-		if (IS_LOGGED_IN)
-		{
-			cout << "Already logged in.\n";
-			return;
-		}
-		auto x = make_pair(cmds[1], cmds[2]);
-		if (find(USER_DB.begin(), USER_DB.end(), x) != USER_DB.end())
-		{
-			cout << "Login successful.\n";
-			IS_LOGGED_IN = true;
-			LOGIN_ID = cmds[1];
-		}
-		else
-			cout << "Incorrect username/password\n";
-	}
-	else if (cmds[0] == "create_group")
-	{
-		if (!IS_LOGGED_IN)
-		{
-			cout << "User is not logged in\n";
-			return;
-		}
-		string grpName = cmds[1];
-		for (int i = 0; i < GROUPS.size(); i++)
-		{
-			string existname = GROUPS[i].first;
-			if (existname == grpName)
-			{
 
-				cout << "Group name must be unique\n";
-				return;
-			}
-		}
-		GROUPS.push_back(make_pair(grpName, LOGIN_ID));
-	}
-	else if (cmds[0] == "join_group")
-	{
-		if (!IS_LOGGED_IN)
-		{
-			cout << "User is not logged in\n";
-			return;
-		}
-		string grpName = cmds[1];
-		bool flag = true;
-		for (int i = 0; i < GROUPS.size(); i++)
-		{
-			string existname = GROUPS[i].first;
-			if (existname == grpName)
-			{
-
-				flag = false;
-			}
-		}
-		if (flag)
-		{
-			cout << "Group not found\n";
-			return;
-		}
-		set<string> existUsers = GROUP_INFO[grpName];
-		if (existUsers.empty() || existUsers.find(LOGIN_ID) == existUsers.end())
-		{
-			existUsers.insert(LOGIN_ID);
-			set<string> alsoPending = PENDING_REQUESTS[LOGIN_ID];
-			alsoPending.insert(grpName);
-			PENDING_REQUESTS[LOGIN_ID] = alsoPending;
-			UNACCEPTED_REQUESTS.push_back(make_pair(grpName, LOGIN_ID));
-		}
-	}
-	else if (cmds[0] == "leave_group")
-	{
-		if (!IS_LOGGED_IN)
-		{
-			cout << "User is not logged in\n";
-			return;
-		}
-		string grpName = cmds[1];
-		bool flag = true;
-		for (int i = 0; i < GROUPS.size(); i++)
-		{
-			string existname = GROUPS[i].first;
-			if (existname == grpName)
-			{
-
-				flag = false;
-			}
-		}
-		if (flag)
-		{
-			cout << "Group not found\n";
-			return;
-		}
-		set<string> existUsers = GROUP_INFO[grpName];
-		existUsers.erase(LOGIN_ID);
-	}
-	else if (cmds[0] == "list_requests")
-	{
-		if (!IS_LOGGED_IN)
-		{
-			cout << "User is not logged in\n";
-			return;
-		}
-		string grpName = cmds[1];
-		bool flag = true;
-		for (int i = 0; i < GROUPS.size(); i++)
-		{
-			string existname = GROUPS[i].first;
-			if (existname == grpName)
-			{
-
-				flag = false;
-			}
-		}
-		if (flag)
-		{
-			cout << "Group not found\n";
-			return;
-		}
-	}
-	else if (cmds[0] == "accept_request")
-	{
-	}
-	else if (cmds[0] == "list_groups")
-	{
-	}
-	else if (cmds[0] == "list_files")
-	{
-	}
-	else if (cmds[0] == "upload_file")
-	{
-	}
-	else if (cmds[0] == "download_file")
-	{
-	}
-	else if (cmds[0] == "logout")
-	{
-	}
-	else if (cmds[0] == "show_downloads")
-	{
-	}
-	else if (cmds[0] == "stop_share")
-	{
-	}
-	else
-	{
-		cout << "Invalid command\n";
-		return;
-	}
-}
-*/
 int main(int argc, char **argv)
 {
 	if (argc < 3)
@@ -434,11 +370,16 @@ int main(int argc, char **argv)
 		cout << "Parameters not provided.Exiting...\n";
 		return -1;
 	}
+	ifstream trackInfo(argv[1]);
+	string ix, px;
+	trackInfo >> ix >> px;
 	int reuseAddress = 1;
 	struct sockaddr_in trackerAddress, peerAddress;
 	trackerAddress.sin_family = AF_INET;
-	trackerAddress.sin_port = htons(stoi(argv[2]));
-	trackerAddress.sin_addr.s_addr = inet_addr(argv[1]);
+	//trackerAddress.sin_port = htons(stoi(argv[2]));
+	//trackerAddress.sin_addr.s_addr = inet_addr(argv[1]);
+	trackerAddress.sin_port = htons(stoi(px));
+	trackerAddress.sin_addr.s_addr = inet_addr(ix.c_str());
 
 	//char buffer[4096] = {0};
 
@@ -454,7 +395,6 @@ int main(int argc, char **argv)
 	int bindStatus = ::bind(socketStatus, (struct sockaddr *)&trackerAddress, sizeof(trackerAddress));
 	if (bindStatus < 0)
 	{
-		printf("%s %s\n", argv[0], argv[1]);
 		printf("Bind failed with status: %d\n", bindStatus);
 		return -1;
 	}
@@ -487,7 +427,7 @@ int main(int argc, char **argv)
 		//char buffer[4096] = {0};
 		//recv(acc, buffer, 4096, 0);
 		//printf("Client : %s\n", buffer);
-		string temp = "You are connected to " + string(argv[1]) + ":" + string(argv[2]) + " with IP " + string(ip) + ":" + to_string(port);
+		string temp = "You are connected to " + ix + ":" + px + " with IP " + string(ip) + ":" + to_string(port);
 		send(acc, temp.c_str(), temp.length(), 0);
 		thread launchPeer(handlePeerCommunication, string(ip), port, acc); //, string(ip), port,descriptor
 		launchPeer.detach();
