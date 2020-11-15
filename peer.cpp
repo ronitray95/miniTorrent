@@ -1,4 +1,3 @@
-// Client side C/C++ program to demonstrate Socket programming
 #include <stdio.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -19,6 +18,7 @@ bool IS_LOGGED_IN = false;
 bool LOGIN_ID = "";
 bool IS_PEER_OR_SEEDER = false;
 int listenSocket;
+int trackerSocket;
 const int MAX_CONNECTIONS = 3;
 string command_string = "";
 string fileUploadPath = "";
@@ -28,6 +28,7 @@ string fileDownloadName = "";
 struct sockaddr_in trackerAddress, peerAddress;
 
 map<int, file_properties> downloadedFiles;
+map<int, string> fileBitVectors;		  //file ID,bit vector
 map<int, vector<peer>> currentSeederList; //file ID,peer
 
 using namespace std; //DOWNLOAD FORMAT = d <FILEID> <PIECE RANGE START> <PIECE RANGE END>
@@ -46,21 +47,24 @@ void sendPiece(string ip, int port, int acc, string filePath, int startPiece, in
 	size_t CHUNK_SIZE = PIECE_SIZE;
 	if (rc < CHUNK_SIZE)
 		CHUNK_SIZE = rc;
+	if (startPiece != 0)
+		rc = rc - startPiece * PIECE_SIZE;
 	char *buff = new char[CHUNK_SIZE];
 	int rer = 0;
-	fp.seekg(startPiece * PIECE_SIZE, ios::beg);
+	fp.seekg((startPiece)*PIECE_SIZE, ios::beg);
 
 	while (fp.tellg() <= endPiece * PIECE_SIZE && fp.read(buff, CHUNK_SIZE))
 	{
 		rc -= CHUNK_SIZE;
 		int z = send(acc, buff, CHUNK_SIZE, 0);
-		cout << "Sending " << z << " bytes\n";
+		//cout << "Sending " << z << " bytes\n";
 		rer += z;
 		if (rc == 0)
 			break;
 		if (rc < CHUNK_SIZE)
 			CHUNK_SIZE = rc;
 	}
+	cout << fp.tellg() << endl;
 	fp.close();
 	cout << "Sent " << rer << " bytes to " << ip << ":" << port << endl;
 	int sta = close(acc);
@@ -68,26 +72,48 @@ void sendPiece(string ip, int port, int acc, string filePath, int startPiece, in
 		cout << "Connection closed with " << ip << ":" << port << endl;
 }
 
-void getPiece(int seedSocket, string filePath, int pieceLocation)
+void getPiece(int seedSocket, string filePath, int fileid, int pieceLocation)
 {
 	ofstream fp(filePath, ios::out | ios::binary | ios::app);
 	fp.seekp(PIECE_SIZE * pieceLocation, ios::beg);
 	int i = 0;
-	int n;
+	int n, currPiece = pieceLocation;
+	string prevBitVec = fileBitVectors[fileid];
 	do
 	{
 		char *buff = new char[PIECE_SIZE];
 		memset(buff, 0, PIECE_SIZE);
-		n = read(listenSocket, buff, PIECE_SIZE);
+		n = read(seedSocket, buff, PIECE_SIZE);
 		fp.write(buff, n);
 		i += n;
+		if (n != 0 && currPiece < prevBitVec.length())
+			prevBitVec[currPiece++] = '1';
 		//cout << "Wrote " << n << " bytes\n";
 	} while (n > 0);
+	cout << "Wrote " << i << " bytes\n";
+	//prevBitVec[pieceLocation] = '1';
+	fileBitVectors[fileid] = prevBitVec;
 	fp.close();
+	//cout << fileBitVectors[fileid] << " \n";
 }
 
 void listenForConnections()
 {
+	listenSocket = socket(AF_INET, SOCK_STREAM, 0);
+	int reuseAddress = 1;
+	int listenSocketOptions = setsockopt(listenSocket, SOL_SOCKET, SO_REUSEADDR, &reuseAddress, sizeof(reuseAddress));
+	setsockopt(listenSocket, SOL_SOCKET, SO_REUSEPORT, &reuseAddress, sizeof(reuseAddress));
+	if (listenSocket < 0 || listenSocketOptions < 0)
+	{
+		cout << "Socket creation error \n";
+		return;
+	}
+	int bindStatus = ::bind(listenSocket, (struct sockaddr *)&peerAddress, sizeof(struct sockaddr_in));
+	if (bindStatus < 0)
+	{
+		cout << ("Bind Failed \n");
+		return;
+	}
 	if (listen(listenSocket, 3) < 0)
 	{
 		cout << ("Listen Failed \n");
@@ -128,6 +154,19 @@ void listenForConnections()
 	cout << "Listen stopped\n";
 }
 
+bool getFrequency(string x)
+{
+	int no1s = 0;
+	for (int i = 0; i < x.length(); i++)
+	{
+		if (x[i] == '1')
+			no1s++;
+	}
+	if (no1s == x.length())
+		return false;
+	return true;
+}
+
 void startDownload(int fileid, string fileName, string filePath)
 {
 	vector<peer> peerlist = currentSeederList[fileid];
@@ -138,12 +177,16 @@ void startDownload(int fileid, string fileName, string filePath)
 	struct stat sb;
 	unsigned long long rc = stat(fileName.c_str(), &sb);
 	rc = (rc == 0 ? sb.st_size : 0ll);
-	int chunks = (int)::ceil(rc / (PIECE_SIZE));
+	int chunks = (int)::ceil(rc / (PIECE_SIZE)) + 1;
 	fp.close();
+	cout << "CHUNKS " << chunks << endl;
 	size_t CHUNK_SIZE = PIECE_SIZE;
 	if (rc < CHUNK_SIZE)
 		CHUNK_SIZE = rc;
+
 	int startPiece = 0, endPiece = chunks / maxConns;
+	string bv(chunks, '0');
+	fileBitVectors[fileid] = bv;
 	ofstream output(filePath, ios::out | ios::binary | ios::app);
 	for (int i = 0; i < maxConns; i++)
 	{
@@ -168,22 +211,58 @@ void startDownload(int fileid, string fileName, string filePath)
 		}
 		//d <FILEID> <PIECE RANGE START> <PIECE RANGE END>
 		string sss = "d " + to_string(fileid) + " " + to_string(startPiece) + " " + to_string(endPiece);
-		send(seedSocket, sss.c_str(), sizeof(sss.c_str()), 0);
+		cout << "Send DL request to seed " << peerlist[i].ip << ":" << peerlist[i].port << " for file ID " << fileid << endl;
+		send(seedSocket, sss.c_str(), sss.length(), 0);
 
-		thread writeToFile(getPiece, seedSocket, filePath, startPiece);
-		writeToFile.detach();
-
+		thread writeToFile(getPiece, seedSocket, filePath, fileid, startPiece);
+		writeToFile.join();
 		startPiece = endPiece + 1;
 		endPiece += (chunks / maxConns);
 		if (startPiece >= chunks)
 			i = maxConns;
-		if (endPiece >= chunks)
-			endPiece = chunks - 1;
+		if (endPiece > chunks)
+			endPiece = chunks;
+		if (i == maxConns - 2)
+			endPiece = chunks;
+	}
+	int y = 1;
+
+	while (getFrequency(fileBitVectors[fileid]))
+		;
+	//char *buffer = new char[PIECE_SIZE];
+	//int valread = read(listenSocket, buffer, 4096);
+	//cout << string(buffer) << endl;
+	cout << "Download of file " + fileName + " complete\n";
+	//mark as seeder
+	string ss = "o " + to_string(fileid);
+	char *buffer = new char[4096];
+	memset(buffer, 0, 4096);
+	send(trackerSocket, ss.c_str(), ss.length(), 0);
+	read(trackerSocket, buffer, 4096);
+	cout << string(buffer) << endl;
+
+	int totPiece = 0;
+	ifstream ifs(fileName, ios::binary);
+	string totalHash = "";
+	char *piece = new char[PIECE_SIZE], hash[20]; //change array to unsigned for SHA1
+
+	while (ifs.read((char *)piece, PIECE_SIZE) || ifs.gcount())
+	{
+		//SHA1(piece, strlen((char *)piece), hash);
+		totalHash += string((char *)hash);
+		totPiece++;
+		memset(piece, 0, PIECE_SIZE);
 	}
 
-	char *buffer = new char[PIECE_SIZE];
-	int valread = read(listenSocket, buffer, 4096);
-	cout << string(buffer) << endl;
+	file_properties f(fileid, fileName, fileName, fileUploadPathGroup, totPiece, totalHash, set<peer>());
+	downloadedFiles[fileid] = f;
+	if (!IS_PEER_OR_SEEDER)
+	{
+		IS_PEER_OR_SEEDER = true;
+		thread startListenOnPeer(listenForConnections);
+		startListenOnPeer.detach();
+	}
+	//getCommand();
 }
 
 int getCommand()
@@ -338,7 +417,7 @@ int getCommand()
 		{
 			fclose(file);
 			command_string = "j " + filePath + " " + cmds[2];
-			cout << command_string << endl;
+			//cout << command_string << endl;
 			fileUploadPath = filePath;
 			fileUploadPathGroup = cmds[2];
 			return 20;
@@ -362,6 +441,7 @@ int getCommand()
 			return 0;
 		}
 		command_string = "k " + cmds[1] + " " + cmds[2] + " " + cmds[3];
+		fileUploadPathGroup = cmds[1];
 		fileDownloadName = cmds[2];
 		fileDownloadPath = cmds[3];
 		return 30;
@@ -417,6 +497,7 @@ int main(int argc, char **argv)
 	ifstream trackInfo(argv[3]);
 	string ix, px;
 	trackInfo >> ix >> px;
+	trackInfo.close();
 	//struct sockaddr_in trackerAddress, peerAddress;
 	trackerAddress.sin_family = AF_INET;
 	trackerAddress.sin_port = htons(stoi(px));
@@ -429,27 +510,30 @@ int main(int argc, char **argv)
 	peerAddress.sin_addr.s_addr = inet_addr(argv[1]);
 
 	char buffer[4096] = {0};
-	listenSocket = socket(AF_INET, SOCK_STREAM, 0);
-	int listenSocketOptions = setsockopt(listenSocket, SOL_SOCKET, SO_REUSEADDR, &reuseAddress, sizeof(reuseAddress));
-	if (listenSocket < 0 || listenSocketOptions < 0)
+	trackerSocket = socket(AF_INET, SOCK_STREAM, 0);
+	int listenSocketOptions = setsockopt(trackerSocket, SOL_SOCKET, SO_REUSEADDR, &reuseAddress, sizeof(reuseAddress));
+	setsockopt(trackerSocket, SOL_SOCKET, SO_REUSEPORT, &reuseAddress, sizeof(reuseAddress));
+	if (trackerSocket < 0 || listenSocketOptions < 0)
 	{
 		cout << "Socket creation error \n";
 		return -1;
 	}
-	int bindStatus = ::bind(listenSocket, (struct sockaddr *)&peerAddress, sizeof(struct sockaddr_in));
+	/*int bindStatus = ::bind(listenSocket, (struct sockaddr *)&peerAddress, sizeof(struct sockaddr_in));
 	if (bindStatus < 0)
 	{
 		cout << ("Bind Failed \n");
 		return -1;
-	}
-	int trackerConnectStatus = connect(listenSocket, (struct sockaddr *)&trackerAddress, sizeof(trackerAddress));
+	}*/
+	int trackerConnectStatus = connect(trackerSocket, (struct sockaddr *)&trackerAddress, sizeof(trackerAddress));
 	if (trackerConnectStatus < 0)
 	{
 		cout << ("Tracker connection Failed \n");
 		return -1;
 	}
-	int valread = read(listenSocket, buffer, 4096);
+	int valread = read(trackerSocket, buffer, 4096);
 	cout << string(buffer) << endl;
+	string syncActual = "sync " + string(argv[1]) + " " + string(argv[2]);
+	send(trackerSocket, syncActual.c_str(), syncActual.length(), 0);
 	while (true)
 	{
 		memset(buffer, 0, 4096);
@@ -457,9 +541,9 @@ int main(int argc, char **argv)
 		if (cmdFlag == 0 || command_string == "")
 			continue;
 		//if (cmdFlag == 1){
-		send(listenSocket, command_string.c_str(), (command_string).length(), 0);
+		send(trackerSocket, command_string.c_str(), (command_string).length(), 0);
 		command_string = "";
-		valread = read(listenSocket, buffer, 4096);
+		valread = read(trackerSocket, buffer, 4096);
 		cout << string(buffer) << endl;
 		//}
 		if (cmdFlag == 100)
@@ -481,11 +565,11 @@ int main(int argc, char **argv)
 			int totPiece = 0;
 			ifstream ifs(fileUploadPath, ios::binary);
 			string totalHash = "";
-			unsigned char piece[PIECE_SIZE], hash[SHA_DIGEST_LENGTH];
+			char *piece = new char[PIECE_SIZE], hash[20]; //change array to unsigned for SHA1
 
-			while (ifs.read((char *)piece, sizeof(piece)) || ifs.gcount())
+			while (ifs.read((char *)piece, PIECE_SIZE) || ifs.gcount())
 			{
-				SHA1(piece, strlen((char *)piece), hash);
+				//SHA1(piece, strlen((char *)piece), hash);
 				totalHash += string((char *)hash);
 				totPiece++;
 				memset(piece, 0, PIECE_SIZE);
@@ -503,6 +587,7 @@ int main(int argc, char **argv)
 		else if (cmdFlag == 30 && isdigit(string(buffer)[0]))
 		{
 			string b = string(buffer);
+			//cout << "ORIG " << b << endl;
 			stringstream x(b);
 			string t;
 			vector<peer> peerList;
@@ -513,7 +598,9 @@ int main(int argc, char **argv)
 					fileid = stoi(t);
 				else
 				{
-					peerList.push_back(peer(t.substr(0, t.find(":")), stoi(t.substr(t.find(":"))), ""));
+					peer ppp(t.substr(0, t.find(":")), stoi(t.substr(t.find(":") + 1)), "");
+					peerList.push_back(peer(ppp));
+					cout << "Added seed " << ppp.ip << ":" << ppp.port << endl;
 				}
 				i++;
 			}

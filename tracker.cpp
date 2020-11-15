@@ -27,6 +27,7 @@ vector<group> GROUPS; //grp id,owner
 map<string, peer> peerList;
 map<string, group_pending_request> groupPendingRequests;
 map<string, vector<file_properties>> filesInGroup;
+map<int, file_properties> fileIndex;
 vector<string> connectedClients;
 //map<string, user> peerDetailsList;
 int FILE_ID = 1;
@@ -44,8 +45,7 @@ void handlePeerCommunication(string ip, int p, int acc)
 		int l = read(acc, buffer, 4096);
 		printf("Client %s:%d said %s (Msg length %d)\n", ip.c_str(), p, buffer, l);
 		string cmdRecvd = string(buffer);
-		for (int i = 0; i < l; i++)
-			cmdRecvd += buffer[i];
+		//for (int i = 0; i < l; i++)cmdRecvd += buffer[i];
 		string t, msg = "";
 		//delete[] buffer;cout<<"W1";
 		stringstream x(cmdRecvd);
@@ -55,7 +55,7 @@ void handlePeerCommunication(string ip, int p, int acc)
 		{
 			cmds.push_back(t);
 		}
-		//cout << "W1\n";
+		//cout << cmds[0]<<"W1\n";
 		if (cmds[0] == "a")
 		{
 			user u(cmds[1], cmds[2]);
@@ -257,20 +257,18 @@ void handlePeerCommunication(string ip, int p, int acc)
 		else if (cmds[0] == "j")
 		{
 			int i, totPiece = 0;
-			cout << "c1";
-			ifstream ifs(cmds[1], ios::binary);
 			string totalHash = "";
-			cout << "c1";
-			unsigned char piece[PIECE_SIZE], hash[SHA_DIGEST_LENGTH];
-			cout << "c1";
-
-			while (ifs.read((char *)piece, sizeof(piece)) || ifs.gcount())
+			char *piece = new char[PIECE_SIZE], hash[20]; //make unsigned for SHA1
+			ifstream ifs(cmds[1], ios::binary);
+			while (ifs.read((char *)piece, PIECE_SIZE) || ifs.gcount())
 			{
-				SHA1(piece, strlen((char *)piece), hash);
+				//SHA1(piece, strlen((char *)piece), hash);
 				totalHash += string((char *)hash);
+				//cout<<ifs.tellg()<<endl;
 				totPiece++;
 				memset(piece, 0, PIECE_SIZE);
 			}
+			cout<<"HASH done Pieces="<<totPiece<<"\n";
 			for (i = 0; i < GROUPS.size(); i++)
 			{
 				if (GROUPS[i].name == cmds[2])
@@ -296,6 +294,7 @@ void handlePeerCommunication(string ip, int p, int acc)
 				{
 					vv.push_back(fp);
 					filesInGroup[cmds[2]] = vv;
+					fileIndex[FILE_ID - 1] = fp;
 					msg = to_string(FILE_ID - 1) + " ID File " + cmds[1] + " added to group " + cmds[2];
 				}
 			}
@@ -323,7 +322,7 @@ void handlePeerCommunication(string ip, int p, int acc)
 					msg = "File " + cmds[2] + " not found in group " + cmds[1];
 				else
 				{
-					set<peer> seeds = files[i].seederList;
+					set<peer> seeds = fileIndex[files[i].id].seederList; //files[i].seederList;
 					if (seeds.empty())
 						msg = "No seeds are currently present";
 					else
@@ -341,7 +340,8 @@ void handlePeerCommunication(string ip, int p, int acc)
 			msg = "Logged out. Bye!";
 			peerList.erase(LOGIN_ID);
 			auto pos = find(connectedClients.begin(), connectedClients.end(), ip + ":" + to_string(p));
-			connectedClients.erase(pos);
+			if (pos != connectedClients.end())
+				connectedClients.erase(pos);
 			send(acc, msg.c_str(), msg.length(), 0);
 			break;
 		}
@@ -353,6 +353,18 @@ void handlePeerCommunication(string ip, int p, int acc)
 		else if (cmds[0] == "n")
 		{
 			//stop share - remove from seeder list
+			msg = "Not implemented";
+			send(acc, msg.c_str(), msg.length(), 0);
+		}
+		else if (cmds[0] == "o") //add as seeder
+		{
+			file_properties vv = fileIndex[stoi(cmds[1])];
+			peer currentPeer = peerList[LOGIN_ID];
+			set<peer> peerSet = vv.seederList;
+			peerSet.insert(currentPeer);
+			vv.seederList = peerSet;
+			fileIndex[stoi(cmds[1])] = vv;
+			msg = currentPeer.ip + ":" + to_string(currentPeer.port) + " added as seeder for file ID " + cmds[1];
 			send(acc, msg.c_str(), msg.length(), 0);
 		}
 		else
@@ -373,6 +385,7 @@ int main(int argc, char **argv)
 	ifstream trackInfo(argv[1]);
 	string ix, px;
 	trackInfo >> ix >> px;
+	trackInfo.close();
 	int reuseAddress = 1;
 	struct sockaddr_in trackerAddress, peerAddress;
 	trackerAddress.sin_family = AF_INET;
@@ -419,16 +432,37 @@ int main(int argc, char **argv)
 		inet_ntop(AF_INET, &(peerAddress.sin_addr), ip, INET_ADDRSTRLEN);
 		port = ntohs(peerAddress.sin_port);
 		string fullAddress = string(ip) + ":" + to_string(port);
-		if (find(connectedClients.begin(), connectedClients.end(), fullAddress) != connectedClients.end())
-			continue;
-		else
-			connectedClients.push_back(fullAddress);
 		printf("connection established with IP : %s and PORT : %d\n", ip, port);
 		//char buffer[4096] = {0};
 		//recv(acc, buffer, 4096, 0);
 		//printf("Client : %s\n", buffer);
 		string temp = "You are connected to " + ix + ":" + px + " with IP " + string(ip) + ":" + to_string(port);
 		send(acc, temp.c_str(), temp.length(), 0);
+
+		char *buffer = new char[4096];
+		memset(buffer, 0, 4096);
+		int l = read(acc, buffer, 4096);
+		string cmdRecvd = string(buffer);
+		string t, msg = "";
+		stringstream x(cmdRecvd);
+		vector<string> cmds;
+		while (getline(x, t, ' '))
+		{
+			cmds.push_back(t);
+		}
+		if (cmds[0] == "sync")
+		{
+			port = stoi(cmds[2]);
+			strcpy(ip, cmds[1].c_str());
+			//ip = cmds[1].c_str();
+			fullAddress = string(ip) + ":" + to_string(port);
+			cout << "Actual IP " << string(ip) << ":" << port << "\n";
+		}
+
+		if (find(connectedClients.begin(), connectedClients.end(), fullAddress) != connectedClients.end())
+			continue;
+		else
+			connectedClients.push_back(fullAddress);
 		thread launchPeer(handlePeerCommunication, string(ip), port, acc); //, string(ip), port,descriptor
 		launchPeer.detach();
 	}
